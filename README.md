@@ -1,166 +1,199 @@
 # Smart Browser 🧠
 
-**Stop snapshot-spamming. Start surgical strikes.** 8 battle-tested techniques to make your agent actually good at browser automation.
+OpenClaw 的 browser 工具很强，但大部分 agent 用起来很笨——动不动全页 snapshot、连续截图找同一个按钮、`wait(5000)` 祈祷加载完成。
 
-**别再无脑截全页了。精准打击才是王道。** 8 个实战技巧，让你的 Agent 浏览器操作效率翻倍。
+这个 skill 是 8 个现成的 JS 代码片段，直接解决这些问题。纯指令型，没有脚本没有依赖，agent 读了就能用。
 
----
+## 技巧
 
-## The Problem / 问题
+### 1. 只提取可交互元素
 
-Most agents use the browser tool like this:
-1. Open page → full snapshot → stare at 500 elements → find the one button → click → full snapshot again → repeat
-
-That's slow, expensive (tokens!), and often fails because the snapshot is too large to reason about.
-
-大部分 Agent 操作浏览器的画风是这样的：
-1. 打开页面 → 全页截图 → 盯着 500 个元素发呆 → 找到那个按钮 → 点击 → 再截一次全页 → 循环
-
-又慢又费 token，而且经常因为 snapshot 太大导致推理出错。
-
-**Smart Browser fixes this with 8 targeted techniques.**
-
-**Smart Browser 用 8 个技巧解决这个问题。**
-
----
-
-## Techniques / 技巧一览
-
-### 1. 🎯 Extract Interactive Elements Only / 只提取可交互元素
-
-Instead of snapshotting everything, run one JS to get only clickable/typeable elements with their coordinates:
-
-不截全页，一段 JS 返回所有可点击/可输入元素：
+全页 snapshot 返回几百个元素，大部分没用。这段 JS 只返回可点击/可输入的元素，附带坐标和选择器：
 
 ```javascript
-// Returns: [{tag, text, href, id, cls, x, y}, ...]
-// Filters out invisible and off-screen elements automatically
+(() => {
+  const els = document.querySelectorAll('a[href], button, input, select, textarea, [role=button], [role=link], [role=tab], [role=menuitem], [onclick], [tabindex]:not([tabindex="-1"])');
+  const results = [];
+  els.forEach((el, i) => {
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0 || rect.bottom < 0 || rect.top > window.innerHeight) return;
+    const tag = el.tagName.toLowerCase();
+    const type = el.type || '';
+    const text = (el.innerText || el.textContent || '').trim().substring(0, 60).replace(/\n/g, ' ');
+    const placeholder = el.placeholder || '';
+    const ariaLabel = el.getAttribute('aria-label') || '';
+    const href = el.href ? el.href.substring(0, 100) : '';
+    const id = el.id || '';
+    const cls = el.className ? String(el.className).substring(0, 60) : '';
+    results.push({ i, tag, type, text: text || placeholder || ariaLabel, href, id, cls, x: Math.round(rect.x + rect.width/2), y: Math.round(rect.y + rect.height/2) });
+  });
+  return JSON.stringify(results);
+})()
 ```
 
-> Go from 500 elements to the 15 that matter.
-> 从 500 个元素缩减到真正有用的 15 个。
+返回 `[{i, tag, type, text, href, id, cls, x, y}, ...]`，从几百个元素缩到十几个有用的。
 
-### 2. 🔤 Find & Click by Text / 按文字查找并点击
+### 2. 按文字查找并点击
 
-Know the button text? Skip the snapshot entirely:
-
-知道按钮写的啥？直接跳过 snapshot：
+知道按钮上写的什么字，一步到位，不需要先 snapshot：
 
 ```javascript
-// "发布" → finds it → clicks it → done
-// One evaluate call. No snapshot needed.
+(() => {
+  const target = '按钮文字';
+  const el = [...document.querySelectorAll('a, button, [role=button], input[type=submit]')]
+    .find(e => e.innerText?.trim().includes(target) || e.value?.includes(target) || e.getAttribute('aria-label')?.includes(target));
+  if (el) { el.click(); return 'clicked: ' + (el.innerText || el.value || '').trim().substring(0, 50); }
+  return 'not found: ' + target;
+})()
 ```
 
-### 3. 📐 Scoped Snapshot / 限定区域截图
+### 3. 限定区域 snapshot
 
-Page too big? Find the target section first, then snapshot only that area.
-
-页面太大？先定位目标区域，只截那一块。
-
-### 4. ⏳ Smart Wait / 条件等待
-
-Don't `wait(5000)` and pray. Wait for the actual element to appear:
-
-别 `wait(5000)` 然后祈祷。等目标元素真正出现：
+页面太大时，先找到目标区域再截图：
 
 ```javascript
-// Polls every 500ms, gives up after 10s
-// Way better than fixed delays
+(() => {
+  const sections = document.querySelectorAll('section, form, [role=dialog], [role=main], main, .modal, .popup, .dropdown');
+  return [...sections].map((s, i) => ({
+    i,
+    tag: s.tagName.toLowerCase(),
+    id: s.id,
+    cls: String(s.className).substring(0, 60),
+    text: s.innerText?.substring(0, 100).replace(/\n/g, ' ')
+  }));
+})()
 ```
 
-### 5. 🚫 Remove Overlays / 清除弹窗遮罩
+找到目标 section 后，用 `browser snapshot` 的 `ref` 参数限定范围。
 
-Cookie banners, login popups, consent dialogs — nuke them all in one shot:
+### 4. 条件等待
 
-Cookie 提示、登录弹窗、隐私同意框 — 一键全清：
+别用固定 `wait(5000)`，等目标元素真正出现：
 
 ```javascript
-// Auto-detects fixed overlays, modals, popups → removes them
+await new Promise((resolve) => {
+  const target = '目标文字';
+  let tries = 0;
+  const timer = setInterval(() => {
+    if (document.body.innerText.includes(target) || ++tries > 20) { clearInterval(timer); resolve(); }
+  }, 500);
+});
+document.body.innerText.includes('目标文字') ? 'found' : 'timeout'
 ```
 
-### 6. 📍 Coordinate Click / 精确坐标点击
+每 500ms 检查一次，最多等 10 秒。比固定等待靠谱得多。
 
-When ref-based clicking misses, get exact coordinates and click directly.
+### 5. 清除弹窗遮罩
 
-当 ref 点不准时，获取精确坐标直接点。
+Cookie 提示、登录弹窗、隐私同意框，一键清掉：
 
-### 7. 📝 Batch Form Fill / 表单批量填写
+```javascript
+(() => {
+  const overlays = document.querySelectorAll('[class*=overlay], [class*=modal], [class*=popup], [class*=cookie], [class*=consent], [role=dialog]');
+  let removed = 0;
+  overlays.forEach(el => {
+    if (el.offsetHeight > 200 || getComputedStyle(el).position === 'fixed') {
+      el.remove();
+      removed++;
+    }
+  });
+  return `removed ${removed} overlays`;
+})()
+```
 
-Fill multiple fields in one call instead of snapshot → type → snapshot → type → ...
+### 6. 精确坐标点击
+
+ref 点不准时的备用方案——先获取坐标，再用鼠标点：
+
+```javascript
+(() => {
+  const el = document.querySelector('你的CSS选择器');
+  if (!el) return 'not found';
+  const rect = el.getBoundingClientRect();
+  return JSON.stringify({ x: Math.round(rect.x + rect.width/2), y: Math.round(rect.y + rect.height/2), w: Math.round(rect.width), h: Math.round(rect.height) });
+})()
+```
+
+拿到坐标后用 `browser act` 的 click 操作。
+
+### 7. 表单批量填写
 
 一次填多个字段，不用来回 snapshot：
 
 ```javascript
-// {'#name': 'Alice', '#email': 'a@b.com', '#phone': '123'}
-// All fields filled + events dispatched in one evaluate
+(() => {
+  const data = {
+    '#name': '值1',
+    '#email': '值2',
+    '#phone': '值3'
+  };
+  const results = [];
+  for (const [sel, val] of Object.entries(data)) {
+    const el = document.querySelector(sel);
+    if (el) {
+      el.focus();
+      el.value = val;
+      el.dispatchEvent(new Event('input', {bubbles: true}));
+      el.dispatchEvent(new Event('change', {bubbles: true}));
+      results.push(`✅ ${sel}`);
+    } else {
+      results.push(`❌ ${sel} not found`);
+    }
+  }
+  return results.join(', ');
+})()
 ```
 
-### 8. 📖 Extract Core Text / 提取核心文本
+注意 `dispatchEvent` 触发 input 和 change 事件，不然 React/Vue 等框架的表单不会响应。
 
-Just need the text content? Skip the snapshot, grab it directly:
+### 8. 提取核心文本
 
-只需要文字内容？直接提取，不用截图：
+只需要页面文字内容时，不用截图：
 
 ```javascript
-// Finds <main>, <article>, or #content → returns text
-// 8000 chars max, clean and fast
+(() => {
+  const main = document.querySelector('main, article, [role=main], #content, .content, .article-content, #js_content');
+  const target = main || document.body;
+  return target.innerText.substring(0, 8000);
+})()
 ```
 
----
+自动找 `<main>`、`<article>` 等主内容区域，找不到就 fallback 到 body。
 
-## Recommended Flow / 推荐操作流程
+## 推荐操作流程
 
 ```
-1. Open page         → browser open
-2. Quick scan         → Technique 1 (interactive elements only)
-3. Take action        → Technique 2 (click by text) or snapshot + ref
-4. Trouble?           → Technique 5 (clear overlays) + 6 (coordinate click)
-5. Need content?      → Technique 8 (extract text)
+1. 打开页面      → browser open
+2. 快速扫描      → 技巧 1（只看可交互元素）
+3. 精准操作      → 技巧 2（按文字点击）或 snapshot + ref
+4. 遇到遮挡      → 技巧 5（清弹窗）+ 技巧 6（坐标点击）
+5. 读取内容      → 技巧 8（提取核心文本）
 ```
 
-**Avoid / 避免：**
-- ❌ Full-page snapshot as first action / 一上来就全页截图
-- ❌ Multiple snapshots to find the same element / 连续截图找同一个元素
-- ❌ Fixed-time waits / 固定时间等待
+别这样做：
+- 一上来就全页 snapshot
+- 连续多次 snapshot 找同一个元素（用 evaluate 一步定位）
+- 固定时间 wait
 
----
-
-## Install / 安装
-
-### Via ClawHub
+## 安装
 
 ```bash
+# ClawHub
 clawhub install smart-browser
-```
 
-### Manual / 手动
-
-```bash
+# 手动
 git clone https://github.com/withnomeaning/smart-browser.git ~/.openclaw/skills/smart-browser
 ```
 
----
-
-## Details / 技术细节
-
-This is a **pure instruction skill** — just a SKILL.md with ready-to-use JS snippets. No scripts, no dependencies, no runtime. Your agent reads the techniques and applies them during browser operations.
-
-这是一个**纯指令型 Skill** — 只有一个 SKILL.md，里面是现成可用的 JS 代码片段。没有脚本，没有依赖，没有运行时。Agent 读完就能用。
+## 文件结构
 
 ```
 smart-browser/
-└── SKILL.md    # 8 techniques with copy-paste JS snippets
+└── SKILL.md    # 8 个技巧 + 完整 JS 代码
 ```
 
-## Requirements / 依赖
-
-- OpenClaw with browser tool enabled
-- That's literally it / 真的就这些
+没有脚本、没有依赖、没有运行时。就一个 SKILL.md，Python 3 都不需要。
 
 ## License
 
-MIT
-
-## Author
-
-[@withnomeaning](https://github.com/withnomeaning)
+MIT — [@withnomeaning](https://github.com/withnomeaning)
